@@ -14,22 +14,23 @@ max_word_length = 512
 # define the model
 def BertTextCnn(base_model,count):
     output = base_model.output#512*768
-    output = keras.layers.Lambda(lambda x: x, output_shape=lambda s:s)(output)
+    output = keras.layers.Lambda(lambda x: x)(output)
+    
     output = keras.layers.Conv1D(32,2,activation = 'tanh')(output)
-    output = keras.layers.AveragePooling1D(2,strides=2)(output)
+    output = keras.layers.AveragePooling1D(2,strides=1)(output)
     output = keras.layers.Conv1D(64,3,activation = 'tanh')(output)
-    output = keras.layers.AveragePooling1D(2,strides=2)(output)
+    output = keras.layers.AveragePooling1D(2,strides=1)(output)
     output = keras.layers.Conv1D(64,4,activation = 'tanh')(output)
-    output = keras.layers.AveragePooling1D(4,strides=2)(output)
+    output = keras.layers.AveragePooling1D(4,strides=1)(output)
+    
     output = keras.layers.Flatten()(output)
-    output = keras.layers.Dense(64,activation = 'tanh')(output)
     output_y = keras.layers.Dense(count, activation='softmax')(output) #new softmax layer
     model = keras.Model(base_model.input, output_y)
     # summarize the model
     model.summary()
     return model
 
-checkpoint_paths = keras_bert.get_checkpoint_paths('C:/Users/yunliu/.keras/models/chinese_L-12_H-768_A-12')
+checkpoint_paths = keras_bert.get_checkpoint_paths('./chinese_L-12_H-768_A-12')
 token_dict = keras_bert.loader.load_vocabulary(checkpoint_paths.vocab)
 tokenizer = keras_bert.tokenizer.Tokenizer(token_dict)
 
@@ -55,8 +56,8 @@ y = keras.utils.to_categorical(y, max_labels)
 
 if not Train:
     bert_model,config = keras_bert.loader.build_model_from_config(checkpoint_paths.config,training=False)
-    model = BertTextCnn(bert_model,5)
-    model.load_weights('./model/qnamaker-1.00.hdf5')
+    model = BertTextCnn(bert_model,len(labels))
+    model.load_weights('./models/qnamaker-1.00.hdf5')
 else:
     #bert model
     bert_model = keras_bert.loader.load_trained_model_from_checkpoint(checkpoint_paths.config,checkpoint_paths.checkpoint,False)
@@ -67,10 +68,13 @@ while not Train:
     print('input:')
     text = input()
     predict_x,segment_x = tokenizer.encode(text,max_len = max_word_length)
-    print(labels[np.argmax(model.predict([[predict_x],[segment_x]]))])
+    scores = model.predict([[predict_x],[segment_x]])[0]    
+    topindex = np.argmax(model.predict([[predict_x],[segment_x]]))
+    print(labels[topindex])
+    print(scores[topindex])
 
-earlyStopping = keras.callbacks.EarlyStopping(monitor='acc', patience=5, verbose=0, mode='auto')
-output_model_file = './model/qnamaker-{acc:.2f}.hdf5'
+earlyStopping = keras.callbacks.EarlyStopping(monitor='acc', patience=8, verbose=0, mode='auto')
+output_model_file = './models/qnamaker-{acc:.2f}.hdf5'
 savecheckpoint = keras.callbacks.ModelCheckpoint(output_model_file, monitor='acc', verbose=1, save_best_only=True)
 
 
@@ -83,12 +87,3 @@ model.fit([x_tokens,x_segments], y, epochs=50, verbose=2,callbacks=[earlyStoppin
 # evaluate the model
 loss, accuracy = model.evaluate([x_tokens,x_segments], y, verbose=0)
 print('Accuracy: %f' % (accuracy*100))
-
-Train = False
-#if not Train:
-#    model = keras.models.load_model('./model/qnamaker-06e-val_acc_0.92.hdf5')
-while not Train:
-    print('input:')
-    text = input()
-    predict_x,segment_x = tokenizer.encode(text,max_len = max_word_length)
-    print(model.predict([[predict_x],[segment_x]]))
