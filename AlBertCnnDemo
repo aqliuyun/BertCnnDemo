@@ -1,0 +1,105 @@
+import os
+import json
+import keras
+import numpy as np
+import bert4keras
+from collections import namedtuple
+from keras.models import Sequential
+from keras.layers import Dense
+from keras.layers import Flatten
+from keras.layers.embeddings import Embedding
+from bert4keras.bert import build_bert_model
+from bert4keras.utils import Tokenizer,load_vocab
+
+Train = False
+max_word_length = 512
+
+# define the model
+def BertTextCnn(base_model,count):
+    input_1 = keras.layers.Input((max_word_length,),name="input1")
+    input_2 = keras.layers.Input((max_word_length,),name="input2")
+    output = base_model([input_1,input_2])#512*768
+    output = keras.layers.Lambda(lambda x: x)(output)
+    
+    output = keras.layers.Conv1D(32,2,activation = 'tanh')(output)
+    output = keras.layers.AveragePooling1D(2,strides=1)(output)
+    output = keras.layers.Conv1D(64,3,activation = 'tanh')(output)
+    output = keras.layers.AveragePooling1D(2,strides=1)(output)
+    output = keras.layers.Conv1D(64,4,activation = 'tanh')(output)
+    output = keras.layers.AveragePooling1D(4,strides=1)(output)
+    
+    output = keras.layers.Flatten()(output)
+    output = keras.layers.Dense(count, activation='softmax')(output) #new softmax layer
+    model = keras.Model([input_1,input_2], [output])
+    # summarize the model
+    model.summary()
+    return model
+
+def get_checkpoint_paths(model_path):
+    CheckpointPaths = namedtuple('CheckpointPaths', ['config', 'checkpoint', 'vocab'])
+    config_path = os.path.join(model_path, 'albert_config_small_google.json')
+    checkpoint_path = os.path.join(model_path, 'albert_model.ckpt')
+    vocab_path = os.path.join(model_path, 'vocab.txt')
+    return CheckpointPaths(config_path, checkpoint_path, vocab_path)
+
+checkpoint_paths = get_checkpoint_paths('./albert_small_zh_google')
+token_dict = load_vocab(checkpoint_paths.vocab)
+tokenizer = Tokenizer(token_dict)
+
+
+# define documents
+max_labels = 0;
+x_tokens = []
+x_segments = []
+y = []
+labels = []
+with open('./datas/questions.json') as fp:
+    loaded_json = json.load(fp)    
+    for doc in loaded_json:        
+        labels.append(doc['label'])        
+        for q in doc['questions']:    
+            x_token,x_segment = tokenizer.encode(q)
+            x_token += [0]*(max_word_length-len(x_token))
+            x_segment += [0]*(max_word_length-len(x_segment))
+            x_tokens.append(x_token)
+            x_segments.append(x_segment)
+            y.append(max_labels)
+        max_labels+=1
+y = keras.utils.to_categorical(y, max_labels)
+
+
+if not Train:
+    bert_model = bert4keras.bert.build_bert_model(config_path = checkpoint_paths.config,albert=True)
+    model = BertTextCnn(bert_model,len(labels))
+    model.load_weights('./models/albert_qnamaker-1.00.hdf5')
+else:
+    #bert model
+    bert_model = bert4keras.bert.build_bert_model(config_path = checkpoint_paths.config,checkpoint_path = checkpoint_paths.checkpoint,albert=True)
+    for l in bert_model.layers:
+        l.trainable = False
+
+while not Train:
+    print('input:')
+    text = input()
+    predict_x,segment_x = tokenizer.encode(text)
+    predict_x += [0]*(max_word_length-len(predict_x))
+    segment_x += [0]*(max_word_length-len(segment_x))
+    scores = model.predict([[predict_x],[segment_x]])[0]    
+    topindex = np.argmax(model.predict([[predict_x],[segment_x]]))
+    print(labels[topindex])
+    print(scores[topindex])    
+
+earlyStopping = keras.callbacks.EarlyStopping(monitor='acc', patience=8, verbose=0, mode='auto')
+output_model_file = './models/albert_qnamaker-{acc:.2f}.hdf5'
+savecheckpoint = keras.callbacks.ModelCheckpoint(output_model_file, monitor='acc', verbose=1, save_best_only=True)
+
+
+model = BertTextCnn(bert_model,max_labels)
+# compile the model
+model.compile(optimizer='adam', loss=keras.losses.categorical_crossentropy, metrics=['acc'])
+# fit the model
+model.fit([x_tokens,x_segments], y, epochs=50, verbose=2,callbacks=[earlyStopping,savecheckpoint])
+
+# evaluate the model
+loss, accuracy = model.evaluate([x_tokens,x_segments], y, verbose=0)
+print('Accuracy: %f' % (accuracy*100))
